@@ -118,6 +118,20 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
     ? dirs.length === 1 && normalizedTarget.length > 0
     : dirs.length > 0;
 
+  // 按钮被禁用时给出明确原因
+  const missingDirs = summaries.filter((s) => !s.exists).map((s) => s.name);
+  const blockReason = !config
+    ? null
+    : !config.credentialsReady
+      ? "R2 凭证不完整，无法上传"
+      : missingDirs.length > 0
+        ? `所选目录不存在或不可读：${missingDirs.join("、")}`
+        : canStart
+          ? null
+          : isSingle
+            ? "请先在左侧选择一个目录，并填写目标 R2 路径"
+            : "请先在左侧选择要上传的 HLS 目录";
+
   const handleStart = async () => {
     dispatch(jobFailed(null));
     try {
@@ -419,7 +433,7 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
         </div>
       </ScrollArea>
 
-      <div className="flex items-center gap-2 border-t border-border/60 p-4">
+      <div className="space-y-2 border-t border-border/60 p-4">
         {!snapshot ? (
           <Button
             className="w-full gap-2"
@@ -444,13 +458,16 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
             {isSingle ? "继续上传下一个目录" : "继续上传下一批"}
           </Button>
         )}
-      </div>
 
-      {snapshot && running && (
-        <div className="px-4 pb-3 text-center text-[11px] text-muted-foreground">
-          {connected ? "实时进度已连接" : "进度连接已断开，正在重连…"}
-        </div>
-      )}
+        {!snapshot && blockReason && (
+          <p className="text-center text-xs text-destructive">{blockReason}</p>
+        )}
+        {snapshot && running && (
+          <p className="text-center text-[11px] text-muted-foreground">
+            {connected ? "实时进度已连接" : "进度连接已断开，正在重连…"}
+          </p>
+        )}
+      </div>
     </Card>
   );
 }
