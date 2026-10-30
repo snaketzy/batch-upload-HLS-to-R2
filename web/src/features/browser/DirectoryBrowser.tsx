@@ -5,14 +5,32 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { useAppDispatch, useAppSelector } from "@/store";
 import { useGetRootsQuery, useListDirsQuery } from "@/store/api";
-import { MAX_DIRS, clear, remove, toggle } from "@/store/selectionSlice";
 import { cn } from "@/lib/utils";
 
-export function DirectoryBrowser() {
-  const dispatch = useAppDispatch();
-  const selected = useAppSelector((s) => s.selection.dirs);
+interface DirectoryBrowserProps {
+  /** 当前已选目录（受控） */
+  dirs: string[];
+  /** 最多可选目录数 */
+  maxDirs: number;
+  onToggle: (dir: string) => void;
+  onRemove: (dir: string) => void;
+  onClear: () => void;
+  title?: string;
+  description?: string;
+  emptyText?: string;
+}
+
+export function DirectoryBrowser({
+  dirs,
+  maxDirs,
+  onToggle,
+  onRemove,
+  onClear,
+  title = "选择 HLS 目录",
+  description = `点击目录名进入，点右侧按钮加入上传队列（最多 ${maxDirs} 个）`,
+  emptyText = "尚未选择目录",
+}: DirectoryBrowserProps) {
   const [path, setPath] = useState("");
   const [jump, setJump] = useState("");
 
@@ -27,8 +45,8 @@ export function DirectoryBrowser() {
     ? ((error as { data?: { error?: string } })?.data?.error ?? "读取目录失败")
     : null;
 
-  const selectedSet = new Set(selected);
-  const full = selected.length >= MAX_DIRS;
+  const selectedSet = new Set(dirs);
+  const full = dirs.length >= maxDirs;
 
   return (
     <Card className="flex h-[calc(100vh-9rem)] flex-col overflow-hidden">
@@ -37,12 +55,12 @@ export function DirectoryBrowser() {
           <div>
             <CardTitle className="flex items-center gap-2">
               <HardDrive className="size-4 text-primary" />
-              选择 HLS 目录
+              {title}
             </CardTitle>
-            <CardDescription>点击目录名进入，点右侧按钮加入上传队列（最多 {MAX_DIRS} 个）</CardDescription>
+            <CardDescription>{description}</CardDescription>
           </div>
           <Badge variant={full ? "warning" : "secondary"} className="shrink-0">
-            {selected.length} / {MAX_DIRS}
+            {dirs.length} / {maxDirs}
           </Badge>
         </div>
       </CardHeader>
@@ -129,7 +147,7 @@ export function DirectoryBrowser() {
                     size="sm"
                     className="h-7 shrink-0 gap-1 text-xs"
                     disabled={!isSelected && full}
-                    onClick={() => dispatch(toggle(entry.path))}
+                    onClick={() => onToggle(entry.path)}
                   >
                     <FolderCheck className={cn("size-3.5", isSelected && "text-primary-foreground")} />
                     {isSelected ? "已加入" : "选择"}
@@ -144,22 +162,17 @@ export function DirectoryBrowser() {
       <div className="border-t border-border/60 p-4">
         <div className="mb-2 flex items-center justify-between">
           <span className="text-xs font-medium text-muted-foreground">待上传目录</span>
-          {selected.length > 0 && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 text-xs"
-              onClick={() => dispatch(clear())}
-            >
+          {dirs.length > 0 && (
+            <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={onClear}>
               清空
             </Button>
           )}
         </div>
-        {selected.length === 0 ? (
-          <p className="text-xs text-muted-foreground">尚未选择目录</p>
+        {dirs.length === 0 ? (
+          <p className="text-xs text-muted-foreground">{emptyText}</p>
         ) : (
           <ul className="flex flex-wrap gap-1.5">
-            {selected.map((dir) => (
+            {dirs.map((dir) => (
               <li
                 key={dir}
                 className="flex max-w-full items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1"
@@ -170,7 +183,7 @@ export function DirectoryBrowser() {
                 <button
                   type="button"
                   className="text-muted-foreground hover:text-foreground"
-                  onClick={() => dispatch(remove(dir))}
+                  onClick={() => onRemove(dir)}
                 >
                   <X className="size-3" />
                 </button>

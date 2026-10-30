@@ -3,11 +3,17 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { UPLOAD_CONCURRENCY, config } from "./config";
-import { contentTypeFor, startUpload } from "./r2";
+import { contentTypeFor, normalizeR2Prefix, startUpload } from "./r2";
 import { walkFiles, type FileRef } from "./browse";
 
 export type DirStatus = "pending" | "uploading" | "done" | "error" | "canceled";
 export type JobStatus = "running" | "done" | "error" | "canceled";
+
+/** 一个待上传源：本地目录 + 它在 R2 中的目标前缀 */
+export interface UploadSource {
+  localPath: string;
+  targetPrefix: string;
+}
 
 export interface DirTask {
   name: string;
@@ -260,14 +266,13 @@ class JobManager {
       }));
   }
 
-  async create(opts: { dirs: string[]; prefix: string }): Promise<UploadJob> {
-    const prefix = normalizePrefix(opts.prefix);
+  async create(opts: { sources: UploadSource[] }): Promise<UploadJob> {
     const dirs: DirTask[] = [];
     const fileList: FileRef[] = [];
     const fileDirIndex: number[] = [];
 
-    for (const raw of opts.dirs) {
-      const abs = path.resolve(raw);
+    for (const src of opts.sources) {
+      const abs = path.resolve(src.localPath);
       let stat: fs.Stats;
       try {
         stat = await fs.promises.stat(abs);
@@ -275,6 +280,9 @@ class JobManager {
         throw new Error(`目录不存在: ${abs}`);
       }
       if (!stat.isDirectory()) throw new Error(`不是目录: ${abs}`);
+
+      const targetPrefix = normalizeR2Prefix(src.targetPrefix);
+      if (!targetPrefix) throw new Error(`目标 R2 路径为空: ${abs}`);
 
       const name = path.basename(abs) || abs;
       const files = await walkFiles(abs);
@@ -286,7 +294,7 @@ class JobManager {
       dirs.push({
         name,
         localPath: abs,
-        r2Prefix: prefix ? `${prefix}/${name}` : name,
+        r2Prefix: targetPrefix,
         status: "pending",
         totalFiles: files.length,
         totalBytes: files.reduce((s, f) => s + f.size, 0),
@@ -300,19 +308,11 @@ class JobManager {
       }
     }
 
-    const job = new UploadJob(prefix, dirs, fileList, fileDirIndex);
+    const job = new UploadJob(dirs[0]?.r2Prefix ?? "", dirs, fileList, fileDirIndex);
     this.jobs.set(job.id, job);
     void job.run();
     return job;
   }
-}
-
-function normalizePrefix(input: string): string {
-  return (input ?? "")
-    .trim()
-    .replace(/^\/+/, "")
-    .replace(/\/+$/, "")
-    .replace(/\/{2,}/g, "/");
 }
 
 export const jobManager = new JobManager();

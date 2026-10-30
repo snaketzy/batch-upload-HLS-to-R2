@@ -1,5 +1,13 @@
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
-import type { ConfigResult, DirEntry, DirSummary, ListResult, Snapshot } from "./types";
+import type { ConfigResult, DirEntry, DirSummary, ListResult, R2ListResult, Snapshot } from "./types";
+
+/** 批量模式传 dirs + prefix；单独目录模式传 dir + targetPath */
+export interface StartUploadBody {
+  dirs?: string[];
+  prefix?: string;
+  dir?: string;
+  targetPath?: string;
+}
 
 export const api = createApi({
   reducerPath: "api",
@@ -17,7 +25,10 @@ export const api = createApi({
     summarize: build.mutation<DirSummary[], string[]>({
       query: (dirs) => ({ url: "/fs/summarize", method: "POST", body: { dirs } }),
     }),
-    startUpload: build.mutation<Snapshot, { dirs: string[]; prefix: string }>({
+    listR2Dirs: build.query<R2ListResult, string>({
+      query: (prefix) => `/r2/list?prefix=${encodeURIComponent(prefix)}`,
+    }),
+    startUpload: build.mutation<Snapshot, StartUploadBody>({
       query: (body) => ({ url: "/uploads", method: "POST", body }),
     }),
     cancelUpload: build.mutation<Snapshot, string>({
@@ -31,6 +42,7 @@ export const {
   useGetRootsQuery,
   useListDirsQuery,
   useSummarizeMutation,
+  useListR2DirsQuery,
   useStartUploadMutation,
   useCancelUploadMutation,
 } = api;

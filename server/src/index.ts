@@ -12,7 +12,8 @@ import {
   missingCredentials,
 } from "./config";
 import { listDirs, roots, summarizeDir } from "./browse";
-import { jobManager } from "./jobs";
+import { listR2Dirs, normalizeR2Prefix } from "./r2";
+import { jobManager, type UploadSource } from "./jobs";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -57,20 +58,53 @@ app.post("/api/fs/summarize", async (req, res) => {
   res.json(summaries);
 });
 
+app.get("/api/r2/list", async (req, res) => {
+  if (!credentialsReady) {
+    return res.status(400).json({
+      error: `R2 凭证不完整，请在 ${ENV_PATH} 中补全：${missingCredentials.join(", ")}`,
+    });
+  }
+  try {
+    const prefix = typeof req.query.prefix === "string" ? req.query.prefix : "";
+    res.json(await listR2Dirs(prefix));
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 app.post("/api/uploads", async (req, res) => {
   if (!credentialsReady) {
     return res.status(400).json({
       error: `R2 凭证不完整，请在 ${ENV_PATH} 中补全：${missingCredentials.join(", ")}`,
     });
   }
-  const dirs: string[] = Array.isArray(req.body?.dirs) ? req.body.dirs : [];
-  const prefix: string = typeof req.body?.prefix === "string" ? req.body.prefix : DEFAULT_PREFIX;
-  if (dirs.length === 0) return res.status(400).json({ error: "没有选择任何目录" });
-  if (dirs.length > MAX_DIRS) {
-    return res.status(400).json({ error: `最多只能选择 ${MAX_DIRS} 个目录` });
+  const body = req.body ?? {};
+  const dirs: string[] = Array.isArray(body.dirs) ? body.dirs : [];
+  const singleDir: string = typeof body.dir === "string" ? body.dir.trim() : "";
+  const targetPath: string = typeof body.targetPath === "string" ? body.targetPath : "";
+  const prefix: string = typeof body.prefix === "string" ? body.prefix : DEFAULT_PREFIX;
+
+  let sources: UploadSource[];
+  if (singleDir) {
+    const targetPrefix = normalizeR2Prefix(targetPath);
+    if (!targetPrefix) {
+      return res.status(400).json({ error: "请填写目标 R2 路径，例如 HLS/tt22022452/H264" });
+    }
+    sources = [{ localPath: singleDir, targetPrefix }];
+  } else {
+    if (dirs.length === 0) return res.status(400).json({ error: "没有选择任何目录" });
+    if (dirs.length > MAX_DIRS) {
+      return res.status(400).json({ error: `最多只能选择 ${MAX_DIRS} 个目录` });
+    }
+    const base = normalizeR2Prefix(prefix);
+    sources = dirs.map((d) => {
+      const name = path.basename(path.resolve(d));
+      return { localPath: d, targetPrefix: base ? `${base}/${name}` : name };
+    });
   }
+
   try {
-    const job = await jobManager.create({ dirs, prefix });
+    const job = await jobManager.create({ sources });
     res.json(job.snapshot());
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });

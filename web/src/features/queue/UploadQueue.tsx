@@ -17,7 +17,7 @@ import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { estimateEta, formatBytes, formatDuration, formatKbps, percent } from "@/lib/format";
-import { cn } from "@/lib/utils";
+import { cn, normalizeR2Path } from "@/lib/utils";
 import { useAppDispatch, useAppSelector } from "@/store";
 import {
   useCancelUploadMutation,
@@ -25,8 +25,9 @@ import {
   useStartUploadMutation,
   useSummarizeMutation,
 } from "@/store/api";
-import { clear } from "@/store/selectionSlice";
 import type { DirSummary } from "@/store/types";
+import type { UploadMode } from "@/store/uiSlice";
+import { R2PathPicker } from "@/features/single/R2PathPicker";
 import {
   connectionChanged,
   jobFailed,
@@ -44,13 +45,21 @@ const STATUS_LABEL: Record<string, string> = {
   running: "上传中",
 };
 
-export function UploadQueue() {
+interface UploadQueueProps {
+  mode: UploadMode;
+  /** 待上传目录；批量模式为多个，单独模式为 0 或 1 个 */
+  dirs: string[];
+  /** 一批上传结束后清空当前选择 */
+  onNewBatch: () => void;
+}
+
+export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
   const dispatch = useAppDispatch();
-  const selected = useAppSelector((s) => s.selection.dirs);
   const { jobId, snapshot, connected, error } = useAppSelector((s) => s.upload);
 
   const { data: config } = useGetConfigQuery();
   const [prefix, setPrefix] = useState("");
+  const [targetPath, setTargetPath] = useState("");
   const [summaries, setSummaries] = useState<DirSummary[]>([]);
 
   const [summarize] = useSummarizeMutation();
@@ -61,13 +70,20 @@ export function UploadQueue() {
     if (config && prefix === "") setPrefix(config.prefix);
   }, [config, prefix]);
 
+  // 单独模式：选中目录后，若目标路径为空，默认填 HLS/<目录名>
   useEffect(() => {
-    if (selected.length === 0) {
+    if (mode !== "single" || dirs.length !== 1 || targetPath !== "") return;
+    const name = dirs[0].split("/").filter(Boolean).pop() || "";
+    if (name) setTargetPath(`HLS/${name}`);
+  }, [mode, dirs, targetPath]);
+
+  useEffect(() => {
+    if (dirs.length === 0) {
       setSummaries([]);
       return;
     }
     let alive = true;
-    summarize(selected)
+    summarize(dirs)
       .unwrap()
       .then((r) => {
         if (alive) setSummaries(r);
@@ -76,7 +92,7 @@ export function UploadQueue() {
     return () => {
       alive = false;
     };
-  }, [selected, summarize]);
+  }, [dirs, summarize]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -95,11 +111,19 @@ export function UploadQueue() {
   const running = snapshot?.status === "running";
   const totalBytes = summaries.reduce((s, d) => s + d.totalBytes, 0);
   const totalFiles = summaries.reduce((s, d) => s + d.totalFiles, 0);
+  const normalizedTarget = normalizeR2Path(targetPath);
+  const isSingle = mode === "single";
+
+  const canStart = isSingle
+    ? dirs.length === 1 && normalizedTarget.length > 0
+    : dirs.length > 0;
 
   const handleStart = async () => {
     dispatch(jobFailed(null));
     try {
-      const snap = await startUpload({ dirs: selected, prefix }).unwrap();
+      const snap = await startUpload(
+        isSingle ? { dir: dirs[0], targetPath: normalizedTarget } : { dirs, prefix },
+      ).unwrap();
       dispatch(jobStarted(snap));
     } catch (e) {
       const msg = (e as { data?: { error?: string } })?.data?.error ?? "启动上传失败";
@@ -113,7 +137,8 @@ export function UploadQueue() {
 
   const handleNew = () => {
     dispatch(reset());
-    dispatch(clear());
+    onNewBatch();
+    setTargetPath("");
   };
 
   const eta = useMemo(
@@ -123,6 +148,10 @@ export function UploadQueue() {
         : 0,
     [snapshot, running],
   );
+
+  const bucketPath = isSingle
+    ? `${normalizedTarget || "…"}/…`
+    : `${prefix || config?.prefix || "HLS"}/<目录名>/…`;
 
   return (
     <Card className="flex h-[calc(100vh-9rem)] flex-col overflow-hidden">
@@ -134,7 +163,7 @@ export function UploadQueue() {
               上传队列
             </CardTitle>
             <CardDescription>
-              目标：s3://{config?.bucket || "…"}/{prefix || config?.prefix || "HLS"}/&lt;目录名&gt;/…
+              目标：s3://{config?.bucket || "…"}/{bucketPath}
             </CardDescription>
           </div>
           {snapshot && (
@@ -171,26 +200,55 @@ export function UploadQueue() {
 
           {!snapshot && (
             <>
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-muted-foreground">R2 前缀</label>
-                <Input
-                  value={prefix}
-                  onChange={(e) => setPrefix(e.target.value)}
-                  placeholder="HLS"
-                  className="h-9"
-                />
-              </div>
+              {isSingle ? (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium text-muted-foreground">
+                      目标 R2 路径
+                    </label>
+                    <R2PathPicker
+                      bucket={config?.bucket}
+                      value={targetPath}
+                      disabled={!config?.credentialsReady}
+                      onPick={setTargetPath}
+                    />
+                  </div>
+                  <Input
+                    value={targetPath}
+                    onChange={(e) => setTargetPath(e.target.value)}
+                    placeholder="HLS/tt22022452/H264"
+                    className="h-9"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {normalizedTarget
+                      ? `将上传到 s3://${config?.bucket || "…"}/${normalizedTarget}/…`
+                      : "可粘贴完整播放地址，或点右上「浏览远端」选择已有目录"}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">R2 前缀</label>
+                  <Input
+                    value={prefix}
+                    onChange={(e) => setPrefix(e.target.value)}
+                    placeholder="HLS"
+                    className="h-9"
+                  />
+                </div>
+              )}
 
               <Separator />
 
-              {selected.length === 0 ? (
+              {dirs.length === 0 ? (
                 <p className="py-8 text-center text-sm text-muted-foreground">
-                  请先在左侧选择要上传的 HLS 目录
+                  {isSingle ? "请先在左侧选择一个要上传的目录" : "请先在左侧选择要上传的 HLS 目录"}
                 </p>
               ) : (
                 <>
                   <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>待上传 {selected.length} 个目录</span>
+                    <span>
+                      {isSingle ? "待上传目录" : `待上传 ${dirs.length} 个目录`}
+                    </span>
                     <span>
                       合计 {totalFiles} 个文件 · {formatBytes(totalBytes)}
                     </span>
@@ -367,14 +425,14 @@ export function UploadQueue() {
             className="w-full gap-2"
             disabled={
               starting ||
-              selected.length === 0 ||
+              !canStart ||
               !config?.credentialsReady ||
               summaries.some((s) => !s.exists)
             }
             onClick={handleStart}
           >
             {starting ? <Loader2 className="animate-spin" /> : <Rocket />}
-            开始上传（{selected.length} 个目录）
+            {isSingle ? "开始上传" : `开始上传（${dirs.length} 个目录）`}
           </Button>
         ) : running ? (
           <Button variant="destructive" className="w-full gap-2" disabled={canceling} onClick={handleCancel}>
@@ -383,7 +441,7 @@ export function UploadQueue() {
           </Button>
         ) : (
           <Button variant="secondary" className="w-full" onClick={handleNew}>
-            继续上传下一批
+            {isSingle ? "继续上传下一个目录" : "继续上传下一批"}
           </Button>
         )}
       </div>

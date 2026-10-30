@@ -59,6 +59,20 @@ export interface ListResult {
   entries: DirEntry[];
 }
 
+export interface R2DirEntry {
+  name: string;
+  prefix: string;
+}
+
+export interface R2ListResult {
+  /** 当前列出的前缀，根目录为 "" */
+  prefix: string;
+  /** 上一级前缀；根目录为 null */
+  parent: string | null;
+  dirs: R2DirEntry[];
+  truncated: boolean;
+}
+
 export interface ConfigResult {
   bucket: string;
   accountId: string;

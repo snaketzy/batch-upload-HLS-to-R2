@@ -2,6 +2,7 @@ import { configureStore } from "@reduxjs/toolkit";
 import { useDispatch, useSelector } from "react-redux";
 import { api } from "./api";
 import selectionReducer from "./selectionSlice";
+import uiReducer from "./uiSlice";
 import uploadReducer from "./uploadSlice";
 
 export const store = configureStore({
@@ -9,6 +10,7 @@ export const store = configureStore({
     [api.reducerPath]: api.reducer,
     selection: selectionReducer,
     upload: uploadReducer,
+    ui: uiReducer,
   },
   middleware: (getDefault) => getDefault().concat(api.middleware),
 });

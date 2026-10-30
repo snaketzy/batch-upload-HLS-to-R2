@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { S3Client } from "@aws-sdk/client-s3";
+import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
 import { PART_SIZE, config } from "./config";
 
@@ -53,6 +53,55 @@ const MIME: Record<string, string> = {
 
 export function contentTypeFor(file: string): string {
   return MIME[path.extname(file).toLowerCase()] ?? "application/octet-stream";
+}
+
+export interface R2DirEntry {
+  name: string;
+  prefix: string;
+}
+
+export interface R2ListResult {
+  /** 当前列出的前缀（已去掉首尾斜杠），根目录为 "" */
+  prefix: string;
+  /** 上一级前缀；根目录为 null */
+  parent: string | null;
+  dirs: R2DirEntry[];
+  /** 结果是否被截断（超过 1000 项） */
+  truncated: boolean;
+}
+
+/** 把用户输入归一化成 R2 前缀（去掉首尾斜杠） */
+export function normalizeR2Prefix(input: string): string {
+  return (input ?? "").trim().replace(/^\/+/, "").replace(/\/+$/, "").replace(/\/{2,}/g, "/");
+}
+
+/** 列出 R2 某个前缀下的直接子目录（Delimiter="/"，只返回目录不返回文件） */
+export async function listR2Dirs(rawPrefix: string): Promise<R2ListResult> {
+  const prefix = normalizeR2Prefix(rawPrefix);
+  const res = await getClient().send(
+    new ListObjectsV2Command({
+      Bucket: config.bucket,
+      Prefix: prefix ? `${prefix}/` : "",
+      Delimiter: "/",
+      MaxKeys: 1000,
+    }),
+  );
+
+  const dirs = (res.CommonPrefixes ?? [])
+    .map((p) => p.Prefix ?? "")
+    .filter(Boolean)
+    .map((full) => {
+      const trimmed = full.replace(/\/+$/, "");
+      return { name: trimmed.slice(trimmed.lastIndexOf("/") + 1), prefix: trimmed };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, "en", { numeric: true }));
+
+  return {
+    prefix,
+    parent: prefix ? prefix.split("/").slice(0, -1).join("/") : null,
+    dirs,
+    truncated: res.IsTruncated ?? false,
+  };
 }
 
 export interface RunningUpload {
