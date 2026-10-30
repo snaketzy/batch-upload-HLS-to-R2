@@ -27,6 +27,9 @@ yarn-error.log*
 # local env files
 .env*.local
 .env
+# 含 R2 / Mux 密钥，禁止提交
+cloudflare.env
+rclone.conf
 
 # vercel
 .vercel
