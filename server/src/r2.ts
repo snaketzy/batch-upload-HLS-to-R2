@@ -1,10 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
-import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectsCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
 import { PART_SIZE, config } from "./config";
 
 let client: S3Client | null = null;
+
+/** stat / delete 扫描对象数量的上限 */
+const STAT_LIMIT = 5000;
 
 export function getClient(): S3Client {
   if (!client) {
@@ -102,6 +105,91 @@ export async function listR2Dirs(rawPrefix: string): Promise<R2ListResult> {
     dirs,
     truncated: res.IsTruncated ?? false,
   };
+}
+
+export interface R2PrefixStat {
+  prefix: string;
+  /** 统计到的对象数；truncated 为 true 时是下界 */
+  objects: number;
+  bytes: number;
+  truncated: boolean;
+}
+
+/** 统计某个前缀下的对象数量与体积（最多扫 STAT_LIMIT 个对象） */
+export async function statR2Prefix(rawPrefix: string): Promise<R2PrefixStat> {
+  const prefix = requirePrefix(rawPrefix);
+  const keyPrefix = `${prefix}/`;
+  const client = getClient();
+
+  let objects = 0;
+  let bytes = 0;
+  let truncated = false;
+  let token: string | undefined;
+
+  do {
+    const res = await client.send(
+      new ListObjectsV2Command({
+        Bucket: config.bucket,
+        Prefix: keyPrefix,
+        MaxKeys: Math.min(1000, STAT_LIMIT - objects),
+        ContinuationToken: token,
+      }),
+    );
+    for (const o of res.Contents ?? []) {
+      objects += 1;
+      bytes += o.Size ?? 0;
+    }
+    token = res.IsTruncated ? res.NextContinuationToken : undefined;
+    if (token && objects >= STAT_LIMIT) {
+      truncated = true;
+      break;
+    }
+  } while (token);
+
+  return { prefix, objects, bytes, truncated };
+}
+
+/** 删除某个前缀下的所有对象，返回删除数量 */
+export async function deleteR2Prefix(rawPrefix: string): Promise<number> {
+  const prefix = requirePrefix(rawPrefix);
+  const keyPrefix = `${prefix}/`;
+  const client = getClient();
+
+  let deleted = 0;
+  let token: string | undefined;
+
+  do {
+    const res = await client.send(
+      new ListObjectsV2Command({
+        Bucket: config.bucket,
+        Prefix: keyPrefix,
+        MaxKeys: 1000,
+        ContinuationToken: token,
+      }),
+    );
+    const keys = (res.Contents ?? [])
+      .map((o) => o.Key)
+      .filter((k): k is string => Boolean(k));
+    if (keys.length > 0) {
+      await client.send(
+        new DeleteObjectsCommand({
+          Bucket: config.bucket,
+          Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true },
+        }),
+      );
+      deleted += keys.length;
+    }
+    token = res.IsTruncated ? res.NextContinuationToken : undefined;
+  } while (token);
+
+  return deleted;
+}
+
+/** 归一化前缀，并拒绝空前缀（避免误删整个桶） */
+function requirePrefix(input: string): string {
+  const prefix = normalizeR2Prefix(input);
+  if (!prefix) throw new Error("不允许操作桶根目录，请指定具体路径");
+  return prefix;
 }
 
 export interface RunningUpload {

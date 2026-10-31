@@ -73,6 +73,33 @@ export interface R2ListResult {
   truncated: boolean;
 }
 
+export interface R2PrefixStat {
+  prefix: string;
+  /** 统计到的对象数；truncated 为 true 时是下界 */
+  objects: number;
+  bytes: number;
+  truncated: boolean;
+}
+
+export interface R2DeleteResult {
+  prefix: string;
+  deleted: number;
+}
+
+export interface R2RenameTask {
+  id: string;
+  from: string;
+  to: string;
+  status: "running" | "done" | "error";
+  /** 源目录下的对象总数，列举完成前为 0 */
+  total: number;
+  copied: number;
+  deleted: number;
+  error?: string;
+  startedAt: number;
+  finishedAt: number;
+}
+
 export interface ConfigResult {
   bucket: string;
   accountId: string;

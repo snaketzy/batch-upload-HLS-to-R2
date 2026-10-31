@@ -12,7 +12,8 @@ import {
   missingCredentials,
 } from "./config";
 import { listDirs, roots, summarizeDir } from "./browse";
-import { listR2Dirs, normalizeR2Prefix } from "./r2";
+import { deleteR2Prefix, listR2Dirs, normalizeR2Prefix, statR2Prefix } from "./r2";
+import { getRenameTask, startRename } from "./r2rename";
 import { jobManager, type UploadSource } from "./jobs";
 
 const app = express();
@@ -70,6 +71,56 @@ app.get("/api/r2/list", async (req, res) => {
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
+});
+
+app.get("/api/r2/stat", async (req, res) => {
+  if (!credentialsReady) {
+    return res.status(400).json({
+      error: `R2 凭证不完整，请在 ${ENV_PATH} 中补全：${missingCredentials.join(", ")}`,
+    });
+  }
+  try {
+    const prefix = typeof req.query.prefix === "string" ? req.query.prefix : "";
+    res.json(await statR2Prefix(prefix));
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.post("/api/r2/delete", async (req, res) => {
+  if (!credentialsReady) {
+    return res.status(400).json({
+      error: `R2 凭证不完整，请在 ${ENV_PATH} 中补全：${missingCredentials.join(", ")}`,
+    });
+  }
+  try {
+    const prefix = typeof req.body?.prefix === "string" ? req.body.prefix : "";
+    const deleted = await deleteR2Prefix(prefix);
+    res.json({ prefix: normalizeR2Prefix(prefix), deleted });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.post("/api/r2/rename", async (req, res) => {
+  if (!credentialsReady) {
+    return res.status(400).json({
+      error: `R2 凭证不完整，请在 ${ENV_PATH} 中补全：${missingCredentials.join(", ")}`,
+    });
+  }
+  try {
+    const from = typeof req.body?.from === "string" ? req.body.from : "";
+    const to = typeof req.body?.to === "string" ? req.body.to : "";
+    res.json(await startRename(from, to));
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+app.get("/api/r2/rename/:id", (req, res) => {
+  const task = getRenameTask(req.params.id);
+  if (!task) return res.status(404).json({ error: "任务不存在" });
+  res.json(task);
 });
 
 app.post("/api/uploads", async (req, res) => {
