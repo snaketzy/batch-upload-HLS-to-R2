@@ -35,7 +35,7 @@ export function DirectoryBrowser({
   const [jump, setJump] = useState("");
 
   const { data: roots } = useGetRootsQuery();
-  const { data, isFetching, isError, error } = useListDirsQuery(path);
+  const { data, isFetching, isError, error, refetch } = useListDirsQuery(path);
 
   useEffect(() => {
     if (data?.path && path === "") setPath(data.path);
@@ -115,7 +115,7 @@ export function DirectoryBrowser({
           {data?.path ?? "加载中…"}
         </code>
         {isFetching && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
-        <Button variant="ghost" size="icon" onClick={() => setPath(data?.path ?? path)} title="刷新">
+        <Button variant="ghost" size="icon" onClick={() => refetch()} title="刷新">
           <RefreshCw />
         </Button>
       </div>
