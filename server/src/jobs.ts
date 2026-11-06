@@ -196,7 +196,8 @@ export class UploadJob {
     } finally {
       this.active.delete(keyId);
       this.uploads.delete(keyId);
-      this.maybeEmit(true);
+      // 走节流推帧，避免小分片多时每完成一个文件就推一帧（会造成前端高频重渲染、屏闪）
+      this.maybeEmit();
     }
   }
 
