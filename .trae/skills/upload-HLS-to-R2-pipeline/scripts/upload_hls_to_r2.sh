@@ -2,12 +2,14 @@
 #
 # 本地 HLS 目录 -> Cloudflare R2 -> 在线 m3u8 地址
 #
-#   两趟上传 + 完整性核对 + 线上 content-type / CORS 验证
+#   三趟上传 + 完整性核对 + 线上 content-type / CORS 验证
 #
-# 为什么必须分两趟：
+# 为什么必须分趟：
 #   rclone 的 --header-upload 是「整个传输」级别的，无法按扩展名分别设置。
 #   而 .vtt 必须显式改写成 Content-Type: text/vtt，否则会落成
-#   application/octet-stream；其余文件交给 rclone 自动识别即可。
+#   application/octet-stream；.m3u8 与 pgs-subs/index.json 必须写成
+#   Cache-Control: no-cache，否则覆盖式重传后 CDN/浏览器仍命中旧清单，
+#   导致分辨率档位、音轨名、内嵌与 PGS 字幕名不更新。其余文件交给 rclone 自动识别即可。
 #
 set -euo pipefail
 
@@ -112,17 +114,24 @@ XFER=(
 [ "$DRY_RUN" = "1" ] && XFER+=(--dry-run)
 
 if [ "$SKIP_UPLOAD" = "0" ]; then
-  echo "=== 1/2 非 vtt（m3u8 / m4s / mp4 / html / js） ==="
+  echo "=== 1/3 非 vtt（m3u8 / m4s / mp4 / html / js） ==="
   echo "    .m3u8 由 rclone 依系统 mime.types 自动识别为 application/x-mpegurl"
   "$RCLONE" "${RCFG[@]}" copy "$HLS_DIR" "$REMOTE" \
     --exclude ".DS_Store" --exclude "*.vtt" "${XFER[@]}"
 
   echo
-  echo "=== 2/2 vtt（强制改写 Content-Type: text/vtt） ==="
+  echo "=== 2/3 vtt（强制改写 Content-Type: text/vtt） ==="
   echo "    --ignore-times 不能省：否则 rclone 判定「已存在」直接跳过，类型改不掉"
   "$RCLONE" "${RCFG[@]}" copy "$HLS_DIR" "$REMOTE" \
     --include "*.vtt" --ignore-times \
     --header-upload "Content-Type: text/vtt" "${XFER[@]}"
+
+  echo
+  echo "=== 3/3 清单（m3u8 与 pgs-subs/index.json 强制 Cache-Control: no-cache） ==="
+  echo "    固定路径覆盖式重传，必须每次回源校验，否则字幕名/档位名不更新"
+  "$RCLONE" "${RCFG[@]}" copy "$HLS_DIR" "$REMOTE" \
+    --include "*.m3u8" --include "**/pgs-subs/index.json" --ignore-times \
+    --header-upload "Cache-Control: no-cache" "${XFER[@]}"
   echo
 else
   echo "（--skip-upload 已跳过上传）"

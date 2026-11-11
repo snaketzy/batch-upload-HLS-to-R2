@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Copy,
   Loader2,
+  RefreshCw,
   Rocket,
   Server,
   Square,
@@ -21,6 +22,7 @@ import { cn, normalizeR2Path } from "@/lib/utils";
 import { useAppDispatch, useAppSelector } from "@/store";
 import {
   useCancelUploadMutation,
+  useDeleteR2PrefixMutation,
   useGetConfigQuery,
   useStartUploadMutation,
   useSummarizeMutation,
@@ -61,10 +63,14 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
   const [prefix, setPrefix] = useState("");
   const [targetPath, setTargetPath] = useState("");
   const [summaries, setSummaries] = useState<DirSummary[]>([]);
+  const [confirmingReupload, setConfirmingReupload] = useState(false);
+  const [reuploading, setReuploading] = useState(false);
+  const [reuploadError, setReuploadError] = useState<string | null>(null);
 
   const [summarize] = useSummarizeMutation();
   const [startUpload, { isLoading: starting }] = useStartUploadMutation();
   const [cancelUpload, { isLoading: canceling }] = useCancelUploadMutation();
+  const [deleteR2Prefix] = useDeleteR2PrefixMutation();
 
   useEffect(() => {
     if (config && prefix === "") setPrefix(config.prefix);
@@ -132,6 +138,22 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
             ? "请先在左侧选择一个目录，并填写目标 R2 路径"
             : "请先在左侧选择要上传的 HLS 目录";
 
+  // 重新上传时需要在 R2 上先删除的目标前缀，必须与 startUpload 的落点完全一致
+  const r2Targets = useMemo(() => {
+    if (isSingle) return normalizedTarget ? [normalizedTarget] : [];
+    const base = normalizeR2Path(prefix);
+    return dirs
+      .map((d) => {
+        const name = d.split("/").filter(Boolean).pop() || "";
+        if (!name) return "";
+        return base ? `${base}/${name}` : name;
+      })
+      .filter(Boolean);
+  }, [isSingle, normalizedTarget, prefix, dirs]);
+
+  const startDisabled =
+    starting || !canStart || !config?.credentialsReady || summaries.some((s) => !s.exists);
+
   const handleStart = async () => {
     dispatch(jobFailed(null));
     try {
@@ -145,6 +167,33 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
     }
   };
 
+  // 重新上传：先删除 R2 上的目标前缀，再走与「开始上传」相同的流程
+  const handleReupload = async () => {
+    if (!confirmingReupload) {
+      setReuploadError(null);
+      setConfirmingReupload(true);
+      return;
+    }
+    setReuploadError(null);
+    setReuploading(true);
+    try {
+      for (const target of r2Targets) {
+        await deleteR2Prefix(target).unwrap();
+      }
+      const snap = await startUpload(
+        isSingle ? { dir: dirs[0], targetPath: normalizedTarget } : { dirs, prefix },
+      ).unwrap();
+      setConfirmingReupload(false);
+      dispatch(jobStarted(snap));
+    } catch (e) {
+      const msg = (e as { data?: { error?: string } })?.data?.error ?? "重新上传失败";
+      setReuploadError(msg);
+      setConfirmingReupload(false);
+    } finally {
+      setReuploading(false);
+    }
+  };
+
   const handleCancel = async () => {
     if (jobId) await cancelUpload(jobId).catch(() => {});
   };
@@ -153,6 +202,8 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
     dispatch(reset());
     onNewBatch();
     setTargetPath("");
+    setConfirmingReupload(false);
+    setReuploadError(null);
   };
 
   const eta = useMemo(
@@ -435,19 +486,69 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
 
       <div className="space-y-2 border-t border-border/60 p-4">
         {!snapshot ? (
-          <Button
-            className="w-full gap-2"
-            disabled={
-              starting ||
-              !canStart ||
-              !config?.credentialsReady ||
-              summaries.some((s) => !s.exists)
-            }
-            onClick={handleStart}
-          >
-            {starting ? <Loader2 className="animate-spin" /> : <Rocket />}
-            {isSingle ? "开始上传" : `开始上传（${dirs.length} 个目录）`}
-          </Button>
+          confirmingReupload ? (
+            <>
+              <div className="rounded-md border border-destructive/40 bg-destructive/10 p-2.5 text-[11px]">
+                <p className="flex items-center gap-1.5 font-medium text-destructive-foreground">
+                  <AlertTriangle className="size-3.5 shrink-0" />
+                  将先删除 R2 上的下列路径，再上传本地目录：
+                </p>
+                <ul className="mt-1 space-y-0.5">
+                  {r2Targets.map((t) => (
+                    <li key={t} className="truncate">
+                      <code className="text-muted-foreground">{t}/</code>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  disabled={reuploading}
+                  onClick={() => {
+                    setConfirmingReupload(false);
+                    setReuploadError(null);
+                  }}
+                >
+                  取消
+                </Button>
+                <Button
+                  variant="destructive"
+                  className="flex-1 gap-2"
+                  disabled={reuploading || r2Targets.length === 0}
+                  onClick={handleReupload}
+                >
+                  {reuploading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+                  {reuploading ? "删除并上传中…" : "确认删除并上传"}
+                </Button>
+              </div>
+              {reuploadError && (
+                <p className="text-center text-xs text-destructive">{reuploadError}</p>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="flex gap-2">
+                <Button className="flex-1 gap-2" disabled={startDisabled} onClick={handleStart}>
+                  {starting ? <Loader2 className="animate-spin" /> : <Rocket />}
+                  {isSingle ? "开始上传" : `开始上传（${dirs.length} 个目录）`}
+                </Button>
+                <Button
+                  variant="outline"
+                  className="flex-1 gap-2"
+                  disabled={startDisabled || r2Targets.length === 0}
+                  onClick={handleReupload}
+                >
+                  <RefreshCw />
+                  重新上传
+                </Button>
+              </div>
+              {reuploadError && (
+                <p className="text-center text-xs text-destructive">{reuploadError}</p>
+              )}
+            </>
+          )
         ) : running ? (
           <Button variant="destructive" className="w-full gap-2" disabled={canceling} onClick={handleCancel}>
             <Square />
