@@ -7,9 +7,10 @@
 # 为什么必须分趟：
 #   rclone 的 --header-upload 是「整个传输」级别的，无法按扩展名分别设置。
 #   而 .vtt 必须显式改写成 Content-Type: text/vtt，否则会落成
-#   application/octet-stream；.m3u8 与 pgs-subs/index.json 必须写成
+#   application/octet-stream；.m3u8、pgs-subs/index.json 与 thumbnails/index.json 必须写成
 #   Cache-Control: no-cache，否则覆盖式重传后 CDN/浏览器仍命中旧清单，
-#   导致分辨率档位、音轨名、内嵌与 PGS 字幕名不更新。其余文件交给 rclone 自动识别即可。
+#   导致分辨率档位、音轨名、内嵌与 PGS 字幕名、缩略图规格不更新。
+#   其余文件交给 rclone 自动识别即可。
 #
 set -euo pipefail
 
@@ -127,11 +128,11 @@ if [ "$SKIP_UPLOAD" = "0" ]; then
     --header-upload "Content-Type: text/vtt" "${XFER[@]}"
 
   echo
-  echo "=== 3/3 清单（m3u8 与 pgs-subs/index.json 强制 Cache-Control: no-cache） ==="
-  echo "    固定路径覆盖式重传，必须每次回源校验，否则字幕名/档位名不更新"
+  echo "=== 3/3 清单（m3u8 / pgs-subs/index.json / thumbnails/index.json 强制 Cache-Control: no-cache） ==="
+  echo "    固定路径覆盖式重传，必须每次回源校验，否则字幕名/档位名/缩略图规格不更新"
   "$RCLONE" "${RCFG[@]}" copy "$HLS_DIR" "$REMOTE" \
-    --include "*.m3u8" --include "**/pgs-subs/index.json" --ignore-times \
-    --header-upload "Cache-Control: no-cache" "${XFER[@]}"
+    --include "*.m3u8" --include "**/pgs-subs/index.json" --include "**/thumbnails/index.json" \
+    --ignore-times --header-upload "Cache-Control: no-cache" "${XFER[@]}"
   echo
 else
   echo "（--skip-upload 已跳过上传）"

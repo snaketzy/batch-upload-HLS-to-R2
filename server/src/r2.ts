@@ -59,16 +59,17 @@ export function contentTypeFor(file: string): string {
 }
 
 /**
- * 清单类对象（master / variant m3u8 与外挂 PGS index.json）的缓存策略。
+ * 清单类对象（master / variant m3u8、外挂 PGS index.json 与悬停缩略图 index.json）的缓存策略。
  * 这些是固定路径的覆盖式上传，若走 CDN/浏览器的默认长缓存，
  * 重新上传后仍会命中旧副本，导致分辨率档位、音轨名、内嵌与 PGS 字幕名不更新，
  * 因此要求每次使用前回源校验。
- * 其余文件（.m4s/.ts/.mp4 等分片）返回 undefined，保持默认缓存策略。
+ * 其余文件（.m4s/.ts/.mp4 等分片、thumbnails/*.jpg 雪碧图）返回 undefined，保持默认缓存策略。
  */
 export function cacheControlFor(key: string): string | undefined {
   const lower = key.toLowerCase();
   if (lower.endsWith(".m3u8")) return "no-cache";
   if (/(^|\/)pgs-subs\/index\.json$/.test(lower)) return "no-cache";
+  if (/(^|\/)thumbnails\/index\.json$/.test(lower)) return "no-cache";
   return undefined;
 }
 
