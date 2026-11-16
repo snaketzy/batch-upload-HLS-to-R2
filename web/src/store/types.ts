@@ -1,5 +1,6 @@
 export type DirStatus = "pending" | "uploading" | "done" | "error" | "canceled";
 export type JobStatus = "running" | "done" | "error" | "canceled";
+export type StorageProvider = "r2" | "cos";
 
 export interface DirTask {
   name: string;
@@ -28,6 +29,7 @@ export interface JobError {
 
 export interface Snapshot {
   id: string;
+  provider: StorageProvider;
   prefix: string;
   status: JobStatus;
   canceled: boolean;
@@ -101,14 +103,20 @@ export interface R2RenameTask {
 }
 
 export interface ConfigResult {
-  bucket: string;
-  accountId: string;
-  publicDomain: string;
   prefix: string;
   maxDirs: number;
   envPath: string;
-  credentialsReady: boolean;
-  missing: string[];
+  defaultProvider: StorageProvider;
+  providers: Record<
+    StorageProvider,
+    {
+      label: string;
+      bucket: string;
+      publicDomain: string;
+      credentialsReady: boolean;
+      missing: string[];
+    }
+  >;
 }
 
 export interface DirSummary {

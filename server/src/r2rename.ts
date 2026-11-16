@@ -5,7 +5,7 @@ import {
   ListObjectsV2Command,
   type S3Client,
 } from "@aws-sdk/client-s3";
-import { config } from "./config";
+import { providers } from "./config";
 import { getClient, normalizeR2Prefix } from "./r2";
 
 /** 复制并发数 */
@@ -43,12 +43,13 @@ function copySource(bucket: string, key: string): string {
 }
 
 async function listKeys(client: S3Client, prefix: string, limit = Number.POSITIVE_INFINITY): Promise<string[]> {
+  const bucket = providers.r2.bucket;
   const keys: string[] = [];
   let token: string | undefined;
   do {
     const res = await client.send(
       new ListObjectsV2Command({
-        Bucket: config.bucket,
+        Bucket: bucket,
         Prefix: `${prefix}/`,
         MaxKeys: 1000,
         ContinuationToken: token,
@@ -84,8 +85,8 @@ async function run(task: RenameTask): Promise<void> {
           try {
             await client.send(
               new CopyObjectCommand({
-                Bucket: config.bucket,
-                CopySource: copySource(config.bucket, key),
+                Bucket: providers.r2.bucket,
+                CopySource: copySource(providers.r2.bucket, key),
                 Key: target,
               }),
             );
@@ -104,7 +105,7 @@ async function run(task: RenameTask): Promise<void> {
       const batch = keys.slice(i, i + DELETE_BATCH);
       await client.send(
         new DeleteObjectsCommand({
-          Bucket: config.bucket,
+          Bucket: providers.r2.bucket,
           Delete: { Objects: batch.map((Key) => ({ Key })), Quiet: true },
         }),
       );

@@ -7,9 +7,10 @@ import {
   MAX_DIRS,
   PORT,
   PROJECT_ROOT,
-  config,
   credentialsReady,
   missingCredentials,
+  providers,
+  type StorageProvider,
 } from "./config";
 import { listDirs, roots, summarizeDir } from "./browse";
 import { deleteR2Prefix, listR2Dirs, normalizeR2Prefix, statR2Prefix } from "./r2";
@@ -25,14 +26,26 @@ app.get("/api/health", (_req, res) => {
 
 app.get("/api/config", (_req, res) => {
   res.json({
-    bucket: config.bucket,
-    accountId: config.accountId,
-    publicDomain: config.publicDomain,
     prefix: DEFAULT_PREFIX,
     maxDirs: MAX_DIRS,
     envPath: ENV_PATH,
-    credentialsReady,
-    missing: missingCredentials,
+    defaultProvider: "r2",
+    providers: {
+      r2: {
+        label: providers.r2.label,
+        bucket: providers.r2.bucket,
+        publicDomain: providers.r2.publicDomain,
+        credentialsReady: credentialsReady.r2,
+        missing: missingCredentials.r2,
+      },
+      cos: {
+        label: providers.cos.label,
+        bucket: providers.cos.bucket,
+        publicDomain: providers.cos.publicDomain,
+        credentialsReady: credentialsReady.cos,
+        missing: missingCredentials.cos,
+      },
+    },
   });
 });
 
@@ -60,9 +73,9 @@ app.post("/api/fs/summarize", async (req, res) => {
 });
 
 app.get("/api/r2/list", async (req, res) => {
-  if (!credentialsReady) {
+  if (!credentialsReady.r2) {
     return res.status(400).json({
-      error: `R2 凭证不完整，请在 ${ENV_PATH} 中补全：${missingCredentials.join(", ")}`,
+      error: `R2 凭证不完整，请在 ${ENV_PATH} 中补全：${missingCredentials.r2.join(", ")}`,
     });
   }
   try {
@@ -74,9 +87,9 @@ app.get("/api/r2/list", async (req, res) => {
 });
 
 app.get("/api/r2/stat", async (req, res) => {
-  if (!credentialsReady) {
+  if (!credentialsReady.r2) {
     return res.status(400).json({
-      error: `R2 凭证不完整，请在 ${ENV_PATH} 中补全：${missingCredentials.join(", ")}`,
+      error: `R2 凭证不完整，请在 ${ENV_PATH} 中补全：${missingCredentials.r2.join(", ")}`,
     });
   }
   try {
@@ -88,9 +101,9 @@ app.get("/api/r2/stat", async (req, res) => {
 });
 
 app.post("/api/r2/delete", async (req, res) => {
-  if (!credentialsReady) {
+  if (!credentialsReady.r2) {
     return res.status(400).json({
-      error: `R2 凭证不完整，请在 ${ENV_PATH} 中补全：${missingCredentials.join(", ")}`,
+      error: `R2 凭证不完整，请在 ${ENV_PATH} 中补全：${missingCredentials.r2.join(", ")}`,
     });
   }
   try {
@@ -103,9 +116,9 @@ app.post("/api/r2/delete", async (req, res) => {
 });
 
 app.post("/api/r2/rename", async (req, res) => {
-  if (!credentialsReady) {
+  if (!credentialsReady.r2) {
     return res.status(400).json({
-      error: `R2 凭证不完整，请在 ${ENV_PATH} 中补全：${missingCredentials.join(", ")}`,
+      error: `R2 凭证不完整，请在 ${ENV_PATH} 中补全：${missingCredentials.r2.join(", ")}`,
     });
   }
   try {
@@ -124,22 +137,28 @@ app.get("/api/r2/rename/:id", (req, res) => {
 });
 
 app.post("/api/uploads", async (req, res) => {
-  if (!credentialsReady) {
-    return res.status(400).json({
-      error: `R2 凭证不完整，请在 ${ENV_PATH} 中补全：${missingCredentials.join(", ")}`,
-    });
-  }
   const body = req.body ?? {};
   const dirs: string[] = Array.isArray(body.dirs) ? body.dirs : [];
   const singleDir: string = typeof body.dir === "string" ? body.dir.trim() : "";
   const targetPath: string = typeof body.targetPath === "string" ? body.targetPath : "";
   const prefix: string = typeof body.prefix === "string" ? body.prefix : DEFAULT_PREFIX;
+  const provider: StorageProvider = body.provider === "cos" ? "cos" : "r2";
+
+  if (!credentialsReady[provider]) {
+    return res.status(400).json({
+      error: `${providers[provider].label} 凭证不完整，请在 ${ENV_PATH} 中补全：${missingCredentials[
+        provider
+      ].join(", ")}`,
+    });
+  }
 
   let sources: UploadSource[];
   if (singleDir) {
     const targetPrefix = normalizeR2Prefix(targetPath);
     if (!targetPrefix) {
-      return res.status(400).json({ error: "请填写目标 R2 路径，例如 HLS/tt22022452/H264" });
+      return res
+        .status(400)
+        .json({ error: `请填写目标${provider === "cos" ? " COS" : " R2"}路径，例如 HLS/tt22022452/H264` });
     }
     sources = [{ localPath: singleDir, targetPrefix }];
   } else {
@@ -155,7 +174,7 @@ app.post("/api/uploads", async (req, res) => {
   }
 
   try {
-    const job = await jobManager.create({ sources });
+    const job = await jobManager.create({ provider, sources });
     res.json(job.snapshot());
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
@@ -214,8 +233,16 @@ if (fs.existsSync(webDist)) {
 
 app.listen(PORT, "127.0.0.1", () => {
   console.log(`[server] http://127.0.0.1:${PORT}`);
-  console.log(`[server] bucket=${config.bucket || "(未配置)"} prefix=${DEFAULT_PREFIX}`);
-  if (!credentialsReady) {
-    console.warn(`[server] ⚠️  R2 凭证不完整，缺少: ${missingCredentials.join(", ")}`);
+  console.log(
+    `[server] r2=${providers.r2.bucket || "(未配置)"} cos=${providers.cos.bucket || "(未配置)"} prefix=${DEFAULT_PREFIX}`,
+  );
+  for (const provider of ["r2", "cos"] as StorageProvider[]) {
+    if (!credentialsReady[provider]) {
+      console.warn(
+        `[server] ⚠️  ${providers[provider].label} 凭证不完整，缺少: ${missingCredentials[
+          provider
+        ].join(", ")}`,
+      );
+    }
   }
 });

@@ -15,27 +15,74 @@ if (fs.existsSync(ENV_PATH)) {
 
 const env = process.env;
 
-export const config = {
-  accountId: env.CLOUDFLARE_ACCOUNT_ID ?? "",
-  bucket: env.CLOUDFLARE_R2_BUCKET ?? "",
-  publicDomain: (env.CLOUDFLARE_R2_PUBLIC_DOMAIN ?? "").replace(/\/+$/, ""),
-  accessKey: env.CLOUDFLARE_R2_ACCESS_KEY ?? "",
-  secret: env.CLOUDFLARE_R2_SECRET ?? "",
+export type StorageProvider = "r2" | "cos";
+
+export interface StorageTargetConfig {
+  label: string;
+  bucket: string;
+  publicDomain: string;
+  accessKey: string;
+  secret: string;
+  endpoint: string;
+  region: string;
+}
+
+const r2AccountId = env.CLOUDFLARE_ACCOUNT_ID ?? "";
+const cosBucket = env.TENCENT_COS_BUCKET ?? "";
+const cosRegion = env.TENCENT_COS_REGION ?? "";
+
+export const providers: Record<StorageProvider, StorageTargetConfig> = {
+  r2: {
+    label: "Cloudflare R2",
+    bucket: env.CLOUDFLARE_R2_BUCKET ?? "",
+    publicDomain: (env.CLOUDFLARE_R2_PUBLIC_DOMAIN ?? "").replace(/\/+$/, ""),
+    accessKey: env.CLOUDFLARE_R2_ACCESS_KEY ?? "",
+    secret: env.CLOUDFLARE_R2_SECRET ?? "",
+    endpoint: r2AccountId ? `https://${r2AccountId}.r2.cloudflarestorage.com` : "",
+    region: "auto",
+  },
+  cos: {
+    label: "腾讯云 COS",
+    bucket: cosBucket,
+    publicDomain: (env.TENCENT_COS_PUBLIC_DOMAIN ?? "").replace(/\/+$/, ""),
+    accessKey: env.TENCENT_COS_SECRET_ID ?? "",
+    secret: env.TENCENT_COS_SECRET_KEY ?? "",
+    endpoint:
+      (env.TENCENT_COS_ENDPOINT ?? "").replace(/\/+$/, "") ||
+      (cosRegion ? `https://cos.${cosRegion}.myqcloud.com` : ""),
+    region: cosRegion,
+  },
 };
 
 /** 凭证是否齐全（缺失时后端启动不崩，改为在发起上传时给出友好提示） */
-export const credentialsReady = Boolean(
-  config.accountId && config.bucket && config.accessKey && config.secret,
-);
+export const credentialsReady: Record<StorageProvider, boolean> = {
+  r2: Boolean(r2AccountId && providers.r2.bucket && providers.r2.accessKey && providers.r2.secret),
+  cos: Boolean(
+    providers.cos.bucket &&
+      providers.cos.region &&
+      providers.cos.accessKey &&
+      providers.cos.secret,
+  ),
+};
 
-export const missingCredentials = [
-  ["CLOUDFLARE_ACCOUNT_ID", config.accountId],
-  ["CLOUDFLARE_R2_BUCKET", config.bucket],
-  ["CLOUDFLARE_R2_ACCESS_KEY", config.accessKey],
-  ["CLOUDFLARE_R2_SECRET", config.secret],
-]
-  .filter(([, v]) => !v)
-  .map(([k]) => k);
+export const missingCredentials: Record<StorageProvider, string[]> = {
+  r2: [
+    ["CLOUDFLARE_ACCOUNT_ID", r2AccountId],
+    ["CLOUDFLARE_R2_BUCKET", providers.r2.bucket],
+    ["CLOUDFLARE_R2_ACCESS_KEY", providers.r2.accessKey],
+    ["CLOUDFLARE_R2_SECRET", providers.r2.secret],
+  ]
+    .filter(([, v]) => !v)
+    .map(([k]) => k),
+  cos: [
+    ["TENCENT_COS_BUCKET", providers.cos.bucket],
+    ["TENCENT_COS_REGION", providers.cos.region],
+    ["TENCENT_COS_SECRET_ID", providers.cos.accessKey],
+    ["TENCENT_COS_SECRET_KEY", providers.cos.secret],
+  ]
+    .filter(([, v]) => !v)
+    .map(([k]) => k),
+};
 
 /** R2 上传根前缀，默认 HLS */
 export const DEFAULT_PREFIX = env.R2_HLS_PREFIX ?? "HLS";

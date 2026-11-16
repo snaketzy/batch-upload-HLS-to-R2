@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -27,7 +27,7 @@ import {
   useStartUploadMutation,
   useSummarizeMutation,
 } from "@/store/api";
-import type { DirSummary } from "@/store/types";
+import type { DirSummary, StorageProvider } from "@/store/types";
 import type { UploadMode } from "@/store/uiSlice";
 import { R2PathPicker } from "@/features/single/R2PathPicker";
 import {
@@ -47,15 +47,28 @@ const STATUS_LABEL: Record<string, string> = {
   running: "上传中",
 };
 
+const PROVIDER_META: Record<StorageProvider, { label: string; short: string }> = {
+  r2: { label: "Cloudflare R2", short: "R2" },
+  cos: { label: "腾讯云 COS", short: "COS" },
+};
+
 interface UploadQueueProps {
   mode: UploadMode;
+  selectedProviders: StorageProvider[];
   /** 待上传目录；批量模式为多个，单独模式为 0 或 1 个 */
   dirs: string[];
   /** 一批上传结束后清空当前选择 */
   onNewBatch: () => void;
 }
 
-export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
+function orderProviders(providers: StorageProvider[]): StorageProvider[] {
+  const ordered: StorageProvider[] = [];
+  if (providers.includes("r2")) ordered.push("r2");
+  if (providers.includes("cos")) ordered.push("cos");
+  return ordered;
+}
+
+export function UploadQueue({ mode, selectedProviders, dirs, onNewBatch }: UploadQueueProps) {
   const dispatch = useAppDispatch();
   const { jobId, snapshot, connected, error } = useAppSelector((s) => s.upload);
 
@@ -66,11 +79,30 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
   const [confirmingReupload, setConfirmingReupload] = useState(false);
   const [reuploading, setReuploading] = useState(false);
   const [reuploadError, setReuploadError] = useState<string | null>(null);
+  const [sequenceProviders, setSequenceProviders] = useState<StorageProvider[]>([]);
+  const [currentRunProvider, setCurrentRunProvider] = useState<StorageProvider | null>(null);
+  const [autoStartingProvider, setAutoStartingProvider] = useState<StorageProvider | null>(null);
+  const autoStartLock = useRef(false);
 
   const [summarize] = useSummarizeMutation();
   const [startUpload, { isLoading: starting }] = useStartUploadMutation();
   const [cancelUpload, { isLoading: canceling }] = useCancelUploadMutation();
   const [deleteR2Prefix] = useDeleteR2PrefixMutation();
+
+  const orderedProviders = useMemo(
+    () => orderProviders(selectedProviders),
+    [selectedProviders],
+  );
+  const activeProvider = snapshot?.provider ?? currentRunProvider ?? orderedProviders[0] ?? "r2";
+  const providerMeta = PROVIDER_META[activeProvider];
+  const activeProviderConfig = config?.providers[activeProvider];
+  const readyProviders = orderedProviders.filter(
+    (provider) => config?.providers[provider]?.credentialsReady,
+  );
+  const missingProviderLabels = orderedProviders
+    .filter((provider) => !config?.providers[provider]?.credentialsReady)
+    .map((provider) => PROVIDER_META[provider].short);
+  const supportsR2Tools = orderedProviders.includes("r2");
 
   useEffect(() => {
     if (config && prefix === "") setPrefix(config.prefix);
@@ -119,6 +151,51 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
   const totalFiles = summaries.reduce((s, d) => s + d.totalFiles, 0);
   const normalizedTarget = normalizeR2Path(targetPath);
   const isSingle = mode === "single";
+  const sequenceHint = orderedProviders.length === 2 ? "顺序：先上传 R2，再自动上传 COS" : null;
+
+  useEffect(() => {
+    if (
+      !snapshot ||
+      snapshot.status !== "done" ||
+      sequenceProviders.length === 0 ||
+      autoStartLock.current
+    ) {
+      return;
+    }
+
+    const nextProvider = sequenceProviders[0];
+    autoStartLock.current = true;
+    setAutoStartingProvider(nextProvider);
+
+    void (async () => {
+      try {
+        const snap = await startUpload(
+          isSingle
+            ? { provider: nextProvider, dir: dirs[0], targetPath: normalizedTarget }
+            : { provider: nextProvider, dirs, prefix },
+        ).unwrap();
+        setSequenceProviders((current) => current.slice(1));
+        setCurrentRunProvider(nextProvider);
+        dispatch(jobStarted(snap));
+      } catch (e) {
+        const msg = (e as { data?: { error?: string } })?.data?.error ?? "启动上传失败";
+        setSequenceProviders([]);
+        dispatch(jobFailed(msg));
+      } finally {
+        autoStartLock.current = false;
+        setAutoStartingProvider(null);
+      }
+    })();
+  }, [dispatch, dirs, isSingle, normalizedTarget, prefix, sequenceProviders, snapshot, startUpload]);
+
+  useEffect(() => {
+    if (!snapshot) return;
+    if (snapshot.status === "error" || snapshot.status === "canceled") {
+      setSequenceProviders([]);
+      setAutoStartingProvider(null);
+      autoStartLock.current = false;
+    }
+  }, [snapshot]);
 
   const canStart = isSingle
     ? dirs.length === 1 && normalizedTarget.length > 0
@@ -128,17 +205,19 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
   const missingDirs = summaries.filter((s) => !s.exists).map((s) => s.name);
   const blockReason = !config
     ? null
-    : !config.credentialsReady
-      ? "R2 凭证不完整，无法上传"
+    : orderedProviders.length === 0
+      ? "请至少选择一个上传目标"
+      : missingProviderLabels.length > 0
+        ? `${missingProviderLabels.join("、")} 凭证不完整，无法上传`
       : missingDirs.length > 0
         ? `所选目录不存在或不可读：${missingDirs.join("、")}`
         : canStart
           ? null
           : isSingle
-            ? "请先在左侧选择一个目录，并填写目标 R2 路径"
+            ? `请先在左侧选择一个目录，并填写目标路径`
             : "请先在左侧选择要上传的 HLS 目录";
 
-  // 重新上传时需要在 R2 上先删除的目标前缀，必须与 startUpload 的落点完全一致
+  // 重新上传时需要先删除远端已有目录；当前仅对 R2 开放
   const r2Targets = useMemo(() => {
     if (isSingle) return normalizedTarget ? [normalizedTarget] : [];
     const base = normalizeR2Path(prefix);
@@ -152,16 +231,34 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
   }, [isSingle, normalizedTarget, prefix, dirs]);
 
   const startDisabled =
-    starting || !canStart || !config?.credentialsReady || summaries.some((s) => !s.exists);
+    starting ||
+    autoStartingProvider !== null ||
+    !canStart ||
+    orderedProviders.length === 0 ||
+    readyProviders.length !== orderedProviders.length ||
+    summaries.some((s) => !s.exists);
+  const canReupload = supportsR2Tools && !startDisabled && r2Targets.length > 0;
+
+  const launchUpload = async (provider: StorageProvider) => {
+    const snap = await startUpload(
+      isSingle
+        ? { provider, dir: dirs[0], targetPath: normalizedTarget }
+        : { provider, dirs, prefix },
+    ).unwrap();
+    setCurrentRunProvider(provider);
+    dispatch(jobStarted(snap));
+  };
 
   const handleStart = async () => {
     dispatch(jobFailed(null));
+    setReuploadError(null);
     try {
-      const snap = await startUpload(
-        isSingle ? { dir: dirs[0], targetPath: normalizedTarget } : { dirs, prefix },
-      ).unwrap();
-      dispatch(jobStarted(snap));
+      const [firstProvider, ...restProviders] = orderedProviders;
+      if (!firstProvider) return;
+      setSequenceProviders(restProviders);
+      await launchUpload(firstProvider);
     } catch (e) {
+      setSequenceProviders([]);
       const msg = (e as { data?: { error?: string } })?.data?.error ?? "启动上传失败";
       dispatch(jobFailed(msg));
     }
@@ -169,6 +266,11 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
 
   // 重新上传：先删除 R2 上的目标前缀，再走与「开始上传」相同的流程
   const handleReupload = async () => {
+    if (!supportsR2Tools) {
+      setReuploadError("重新上传需要选中 R2，当前仅选 COS 时暂不支持");
+      setConfirmingReupload(false);
+      return;
+    }
     if (!confirmingReupload) {
       setReuploadError(null);
       setConfirmingReupload(true);
@@ -180,12 +282,13 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
       for (const target of r2Targets) {
         await deleteR2Prefix(target).unwrap();
       }
-      const snap = await startUpload(
-        isSingle ? { dir: dirs[0], targetPath: normalizedTarget } : { dirs, prefix },
-      ).unwrap();
+      const [firstProvider, ...restProviders] = orderedProviders;
+      if (!firstProvider) return;
+      setSequenceProviders(restProviders);
       setConfirmingReupload(false);
-      dispatch(jobStarted(snap));
+      await launchUpload(firstProvider);
     } catch (e) {
+      setSequenceProviders([]);
       const msg = (e as { data?: { error?: string } })?.data?.error ?? "重新上传失败";
       setReuploadError(msg);
       setConfirmingReupload(false);
@@ -195,6 +298,9 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
   };
 
   const handleCancel = async () => {
+    setSequenceProviders([]);
+    setAutoStartingProvider(null);
+    autoStartLock.current = false;
     if (jobId) await cancelUpload(jobId).catch(() => {});
   };
 
@@ -204,6 +310,10 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
     setTargetPath("");
     setConfirmingReupload(false);
     setReuploadError(null);
+    setSequenceProviders([]);
+    setCurrentRunProvider(null);
+    setAutoStartingProvider(null);
+    autoStartLock.current = false;
   };
 
   const eta = useMemo(
@@ -217,6 +327,8 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
   const bucketPath = isSingle
     ? `${normalizedTarget || "…"}/…`
     : `${prefix || config?.prefix || "HLS"}/<目录名>/…`;
+  const sequencing =
+    autoStartingProvider !== null || (snapshot?.status === "done" && sequenceProviders.length > 0);
 
   return (
     <Card className="flex h-[calc(100vh-9rem)] flex-col overflow-hidden">
@@ -228,8 +340,10 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
               上传队列
             </CardTitle>
             <CardDescription>
-              目标：s3://{config?.bucket || "…"}/{bucketPath}
+              目标：{orderedProviders.map((provider) => PROVIDER_META[provider].short).join(" + ")} ·
+              当前 {providerMeta.label} · s3://{activeProviderConfig?.bucket || "…"}/{bucketPath}
             </CardDescription>
+            {sequenceHint && <p className="mt-1 text-[11px] text-muted-foreground">{sequenceHint}</p>}
           </div>
           {snapshot && (
             <Badge
@@ -251,14 +365,19 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
 
       <ScrollArea className="flex-1">
         <div className="space-y-4 p-5">
-          {!config?.credentialsReady && config && (
+          {missingProviderLabels.length > 0 && config && (
             <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive-foreground">
               <AlertTriangle className="mt-0.5 size-4 shrink-0" />
               <div>
-                <p className="font-medium">R2 凭证不完整，无法上传。</p>
-                <p className="mt-0.5 text-muted-foreground">
-                  请在 {config.envPath} 补全：{config.missing.join("、")}
-                </p>
+                <p className="font-medium">{missingProviderLabels.join("、")} 凭证不完整，无法上传。</p>
+                {orderedProviders
+                  .filter((provider) => !config.providers[provider]?.credentialsReady)
+                  .map((provider) => (
+                    <p key={provider} className="mt-0.5 text-muted-foreground">
+                      {PROVIDER_META[provider].label}：请在 {config.envPath} 补全
+                      {config.providers[provider]?.missing.join("、") || "—"}
+                    </p>
+                  ))}
               </div>
             </div>
           )}
@@ -269,14 +388,18 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between gap-2">
                     <label className="text-xs font-medium text-muted-foreground">
-                      目标 R2 路径
+                      目标路径
                     </label>
-                    <R2PathPicker
-                      bucket={config?.bucket}
-                      value={targetPath}
-                      disabled={!config?.credentialsReady}
-                      onPick={setTargetPath}
-                    />
+                    {supportsR2Tools ? (
+                      <R2PathPicker
+                        bucket={config?.providers.r2?.bucket}
+                        value={targetPath}
+                        disabled={missingProviderLabels.length > 0}
+                        onPick={setTargetPath}
+                      />
+                    ) : (
+                      <span className="text-[11px] text-muted-foreground">COS 暂不支持远端浏览</span>
+                    )}
                   </div>
                   <Input
                     value={targetPath}
@@ -286,13 +409,20 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
                   />
                   <p className="text-xs text-muted-foreground">
                     {normalizedTarget
-                      ? `将上传到 s3://${config?.bucket || "…"}/${normalizedTarget}/…`
-                      : "可粘贴完整播放地址，或点右上「浏览远端」选择已有目录"}
+                      ? `将上传到 ${orderedProviders
+                          .map(
+                            (provider) =>
+                              `s3://${config?.providers[provider]?.bucket || "…"}/${normalizedTarget}/…`,
+                          )
+                          .join(" 及 ")}`
+                      : supportsR2Tools
+                        ? "可粘贴完整播放地址，或点右上「浏览远端」选择已有目录"
+                        : "路径规则与 R2 相同，例如 HLS/tt22022452/H264"}
                   </p>
                 </div>
               ) : (
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-muted-foreground">R2 前缀</label>
+                  <label className="text-xs font-medium text-muted-foreground">上传前缀</label>
                   <Input
                     value={prefix}
                     onChange={(e) => setPrefix(e.target.value)}
@@ -479,6 +609,11 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
               )}
 
               {error && <p className="text-xs text-destructive">{error}</p>}
+              {sequencing && (
+                <p className="text-xs text-muted-foreground">
+                  正在准备下一步：{PROVIDER_META[autoStartingProvider ?? sequenceProviders[0] ?? "cos"].label}
+                </p>
+              )}
             </>
           )}
         </div>
@@ -491,7 +626,8 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
               <div className="rounded-md border border-destructive/40 bg-destructive/10 p-2.5 text-[11px]">
                 <p className="flex items-center gap-1.5 font-medium text-destructive-foreground">
                   <AlertTriangle className="size-3.5 shrink-0" />
-                  将先删除 R2 上的下列路径，再上传本地目录：
+                  将先删除 R2 上的下列路径，然后上传到
+                  {orderedProviders.map((provider) => ` ${PROVIDER_META[provider].short}`).join(" ->")}：
                 </p>
                 <ul className="mt-1 space-y-0.5">
                   {r2Targets.map((t) => (
@@ -537,11 +673,15 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
                 <Button
                   variant="outline"
                   className="flex-1 gap-2"
-                  disabled={startDisabled || r2Targets.length === 0}
+                  disabled={!canReupload}
                   onClick={handleReupload}
                 >
                   <RefreshCw />
-                  重新上传
+                  {supportsR2Tools
+                    ? orderedProviders.length === 2
+                      ? "重新上传（R2 -> COS）"
+                      : "重新上传"
+                    : "仅选 COS 时暂不支持重新上传"}
                 </Button>
               </div>
               {reuploadError && (
@@ -553,6 +693,11 @@ export function UploadQueue({ mode, dirs, onNewBatch }: UploadQueueProps) {
           <Button variant="destructive" className="w-full gap-2" disabled={canceling} onClick={handleCancel}>
             <Square />
             取消上传
+          </Button>
+        ) : sequencing ? (
+          <Button variant="secondary" className="w-full gap-2" disabled>
+            <Loader2 className="animate-spin" />
+            正在切换到 {PROVIDER_META[autoStartingProvider ?? sequenceProviders[0] ?? "cos"].short}
           </Button>
         ) : (
           <Button variant="secondary" className="w-full" onClick={handleNew}>

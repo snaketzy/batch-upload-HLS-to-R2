@@ -9,10 +9,12 @@ import type {
   R2PrefixStat,
   R2RenameTask,
   Snapshot,
+  StorageProvider,
 } from "./types";
 
 /** 批量模式传 dirs + prefix；单独目录模式传 dir + targetPath */
 export interface StartUploadBody {
+  provider?: StorageProvider;
   dirs?: string[];
   prefix?: string;
   dir?: string;

@@ -2,8 +2,8 @@ import { EventEmitter } from "node:events";
 import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
-import { UPLOAD_CONCURRENCY, config } from "./config";
-import { contentTypeFor, normalizeR2Prefix, startUpload } from "./r2";
+import { UPLOAD_CONCURRENCY, type StorageProvider } from "./config";
+import { buildPublicUrl, contentTypeFor, normalizeStoragePrefix, startUpload } from "./storage";
 import { walkFiles, type FileRef } from "./browse";
 
 export type DirStatus = "pending" | "uploading" | "done" | "error" | "canceled";
@@ -44,6 +44,7 @@ export interface JobError {
 
 export interface Snapshot {
   id: string;
+  provider: StorageProvider;
   prefix: string;
   status: JobStatus;
   canceled: boolean;
@@ -72,6 +73,7 @@ export class UploadJob {
   readonly createdAt = Date.now();
   readonly emitter = new EventEmitter();
 
+  readonly provider: StorageProvider;
   readonly prefix: string;
   readonly dirs: DirTask[];
 
@@ -88,7 +90,14 @@ export class UploadJob {
   private samples: { t: number; bytes: number }[] = [];
   private lastEmitAt = 0;
 
-  constructor(prefix: string, dirs: DirTask[], fileList: FileRef[], fileDirIndex: number[]) {
+  constructor(
+    provider: StorageProvider,
+    prefix: string,
+    dirs: DirTask[],
+    fileList: FileRef[],
+    fileDirIndex: number[],
+  ) {
+    this.provider = provider;
     this.prefix = prefix;
     this.dirs = dirs;
     this.fileList = fileList;
@@ -171,6 +180,7 @@ export class UploadJob {
 
     try {
       const running = startUpload({
+        provider: this.provider,
         localPath: file.abs,
         key,
         contentType: contentTypeFor(file.rel),
@@ -215,6 +225,7 @@ export class UploadJob {
     const uploadedBytes = this.dirs.reduce((s, d) => s + d.uploadedBytes, 0);
     return {
       id: this.id,
+      provider: this.provider,
       prefix: this.prefix,
       status: this.status,
       canceled: this.canceled,
@@ -232,14 +243,16 @@ export class UploadJob {
   }
 
   private buildUrls(): Snapshot["urls"] {
-    if (!config.publicDomain || this.status !== "done") return [];
+    if (this.status !== "done") return [];
     const out: Snapshot["urls"] = [];
     for (const d of this.dirs) {
       for (const m of d.manifests) {
+        const url = buildPublicUrl(this.provider, `${d.r2Prefix}/${m}`);
+        if (!url) continue;
         out.push({
           dir: d.name,
           manifest: m,
-          url: `${config.publicDomain}/${d.r2Prefix}/${m}`,
+          url,
         });
       }
     }
@@ -260,6 +273,7 @@ class JobManager {
       .slice(0, 20)
       .map((j) => ({
         id: j.id,
+        provider: j.provider,
         prefix: j.prefix,
         status: j.status,
         createdAt: j.createdAt,
@@ -267,7 +281,7 @@ class JobManager {
       }));
   }
 
-  async create(opts: { sources: UploadSource[] }): Promise<UploadJob> {
+  async create(opts: { provider: StorageProvider; sources: UploadSource[] }): Promise<UploadJob> {
     const dirs: DirTask[] = [];
     const fileList: FileRef[] = [];
     const fileDirIndex: number[] = [];
@@ -282,8 +296,8 @@ class JobManager {
       }
       if (!stat.isDirectory()) throw new Error(`不是目录: ${abs}`);
 
-      const targetPrefix = normalizeR2Prefix(src.targetPrefix);
-      if (!targetPrefix) throw new Error(`目标 R2 路径为空: ${abs}`);
+      const targetPrefix = normalizeStoragePrefix(src.targetPrefix);
+      if (!targetPrefix) throw new Error(`目标对象存储路径为空: ${abs}`);
 
       const name = path.basename(abs) || abs;
       const files = await walkFiles(abs);
@@ -309,7 +323,13 @@ class JobManager {
       }
     }
 
-    const job = new UploadJob(dirs[0]?.r2Prefix ?? "", dirs, fileList, fileDirIndex);
+    const job = new UploadJob(
+      opts.provider,
+      dirs[0]?.r2Prefix ?? "",
+      dirs,
+      fileList,
+      fileDirIndex,
+    );
     this.jobs.set(job.id, job);
     void job.run();
     return job;
