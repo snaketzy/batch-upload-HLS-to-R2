@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowUp, Folder, FolderCheck, HardDrive, Loader2, RefreshCw, X } from "lucide-react";
+import { ArrowUp, Folder, FolderCheck, HardDrive, ListChecks, ListX, Loader2, RefreshCw, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -47,6 +47,20 @@ export function DirectoryBrowser({
 
   const selectedSet = new Set(dirs);
   const full = dirs.length >= maxDirs;
+
+  const currentEntries = data?.entries ?? [];
+  const allCurrentSelected =
+    currentEntries.length > 0 && currentEntries.every((e) => selectedSet.has(e.path));
+
+  const toggleSelectAll = () => {
+    if (allCurrentSelected) {
+      currentEntries.forEach((e) => onToggle(e.path));
+    } else {
+      currentEntries.forEach((e) => {
+        if (!selectedSet.has(e.path)) onToggle(e.path);
+      });
+    }
+  };
 
   return (
     <Card className="flex h-[calc(100vh-9rem)] flex-col overflow-hidden">
@@ -115,6 +129,15 @@ export function DirectoryBrowser({
           {data?.path ?? "加载中…"}
         </code>
         {isFetching && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
+        <Button
+          variant="ghost"
+          size="icon"
+          disabled={currentEntries.length === 0}
+          onClick={toggleSelectAll}
+          title={allCurrentSelected ? "取消全选" : "全选当前目录"}
+        >
+          {allCurrentSelected ? <ListX /> : <ListChecks />}
+        </Button>
         <Button variant="ghost" size="icon" onClick={() => refetch()} title="刷新">
           <RefreshCw />
         </Button>
